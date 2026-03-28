@@ -203,7 +203,7 @@ def _generate_veo_video(client: genai.Client, prompt: str) -> Optional[str]:
         return None
 
 
-async def _generate_veo_segment_async(client: genai.Client, prompt: str) -> str | None:
+async def _generate_veo_segment_async(client: genai.Client, prompt: str) -> Optional[str]:
     """Run the synchronous Veo call in a thread so it doesn't block the event loop."""
     return await asyncio.to_thread(_generate_veo_video, client, prompt)
 
