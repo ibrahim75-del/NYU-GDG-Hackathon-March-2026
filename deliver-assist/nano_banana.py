@@ -203,9 +203,6 @@ def _generate_veo_video(client: genai.Client, prompt: str) -> Optional[str]:
         return None
 
 
-<<<<<<< HEAD
-def _extract_inline(response, default_mime: str) -> Tuple[Optional[str], Optional[str]]:
-=======
 async def _generate_veo_segment_async(client: genai.Client, prompt: str) -> str | None:
     """Run the synchronous Veo call in a thread so it doesn't block the event loop."""
     return await asyncio.to_thread(_generate_veo_video, client, prompt)
@@ -214,7 +211,6 @@ async def _generate_veo_segment_async(client: genai.Client, prompt: str) -> str 
 # ── Multi-segment generation (public API) ────────────────────────────────────
 
 async def generate_video_segments(client: genai.Client, script_payload: dict) -> dict:
->>>>>>> ce58239543ea8f3b5bb0ed863d12a782aa02f659
     """
     Split the script into two halves and generate both segments in parallel.
     Each segment is an 8-second Veo clip; together they cover the full script.

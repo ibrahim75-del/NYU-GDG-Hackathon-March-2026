@@ -25,12 +25,8 @@ from system_prompt import build_system_prompt
 from tools import TOOL_DECLARATIONS, handle_tool_call
 from data_loader import load_data_context
 from video_script import generate_video_script
-<<<<<<< HEAD
-from nano_banana import transform_script_to_video_prompt, generate_video as nb_generate_video
-from avatar_gen import generate_avatar_set
-=======
 from nano_banana import transform_script_to_video_prompt, generate_video_segments
->>>>>>> ce58239543ea8f3b5bb0ed863d12a782aa02f659
+from avatar_gen import generate_avatar_set
 
 load_dotenv()
 
