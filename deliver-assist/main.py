@@ -26,6 +26,7 @@ from tools import TOOL_DECLARATIONS, handle_tool_call
 from data_loader import load_data_context
 from video_script import generate_video_script
 from nano_banana import transform_script_to_video_prompt, generate_video as nb_generate_video
+from avatar_gen import generate_avatar_set
 
 load_dotenv()
 
@@ -318,6 +319,13 @@ async def index():
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": MODEL}
+
+
+@app.get("/api/generate-avatar")
+async def generate_avatar():
+    """Generate a set of AI avatar expression images. Called once at session start."""
+    avatar_set = await generate_avatar_set()
+    return avatar_set
 
 
 # ── Run ──────────────────────────────────────────────────────────────────────

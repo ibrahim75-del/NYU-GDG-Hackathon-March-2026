@@ -10,6 +10,7 @@ Pipeline:
 import base64
 import logging
 import time
+from typing import Optional, Tuple
 from google import genai
 from google.genai import types
 
@@ -147,7 +148,7 @@ def transform_script_to_video_prompt(script_payload: dict) -> str:
 
 # ── Nano Banana API call ──────────────────────────────────────────────────────
 
-def _generate_veo_video(client: genai.Client, prompt: str) -> str | None:
+def _generate_veo_video(client: genai.Client, prompt: str) -> Optional[str]:
     """
     Generate a video using Veo. Polls until the operation completes or times out.
     Returns a video URI/URL string, or None on failure.
@@ -183,7 +184,7 @@ def _generate_veo_video(client: genai.Client, prompt: str) -> str | None:
     return uri
 
 
-def _extract_inline(response, default_mime: str) -> tuple[str | None, str | None]:
+def _extract_inline(response, default_mime: str) -> Tuple[Optional[str], Optional[str]]:
     """
     Extract the first inline data or file URI from a generate_content response.
     Returns (data_url_or_uri, mime_type) or (None, None).
