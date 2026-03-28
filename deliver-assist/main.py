@@ -7,19 +7,25 @@ Handles bidirectional audio streaming, camera frames, and tool calls.
 import asyncio
 import base64
 import json
+import logging
 import os
 import traceback
 
+logger = logging.getLogger(__name__)
+
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
 from system_prompt import build_system_prompt
 from tools import TOOL_DECLARATIONS, handle_tool_call
 from data_loader import load_data_context
+from video_script import generate_video_script
+from nano_banana import transform_script_to_video_prompt, generate_video as nb_generate_video
 
 load_dotenv()
 
@@ -39,6 +45,9 @@ PORT = int(os.getenv("PORT", "8080"))
 # - "gemini-2.5-flash-native-audio-preview-12-2025"  ← older preview
 MODEL = "gemini-2.5-flash-native-audio-latest"
 
+# Standard (non-live) model for text generation tasks like video scripts
+TEXT_MODEL = "gemini-2.5-flash"
+
 # Audio format constants
 INPUT_SAMPLE_RATE = 16000   # 16kHz input from browser mic
 OUTPUT_SAMPLE_RATE = 24000  # 24kHz output from Gemini
@@ -54,29 +63,6 @@ system_prompt_text = build_system_prompt(survey_context, quarterly_context)
 app = FastAPI(title="DeliverAssist")
 
 
-# ── Build session config ─────────────────────────────────────────────────────
-
-def get_session_config() -> types.LiveConnectConfig:
-    """Build the Gemini Live API session configuration."""
-    return types.LiveConnectConfig(
-        response_modalities=["AUDIO"],
-        system_instruction=types.Content(
-            parts=[types.Part(text=system_prompt_text)]
-        ),
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name="Kore"  # Clear, warm voice
-                )
-            )
-        ),
-        tools=[types.Tool(function_declarations=[
-            types.FunctionDeclaration(**decl) for decl in TOOL_DECLARATIONS
-        ])],
-        input_audio_transcription=types.AudioTranscriptionConfig(),
-        output_audio_transcription=types.AudioTranscriptionConfig(),
-    )
-
 
 # ── WebSocket endpoint ───────────────────────────────────────────────────────
 
@@ -84,12 +70,43 @@ def get_session_config() -> types.LiveConnectConfig:
 async def websocket_endpoint(ws: WebSocket):
     """
     WebSocket proxy between browser and Gemini Live API.
-    Loops Gemini sessions so the browser connection stays alive across turns.
+    Keeps the Gemini session alive across turns so conversation context is never lost.
+    On session restart (errors only), injects conversation history into the system prompt.
     """
     await ws.accept()
     print("[WS] Client connected")
 
-    config = get_session_config()
+    # Conversation history — survives session restarts so context is never lost
+    conversation_history: list[dict] = []
+    current_user_chunks: list[str] = []
+    current_agent_chunks: list[str] = []
+
+    def get_config_with_history() -> types.LiveConnectConfig:
+        """Build session config, injecting prior conversation history if any."""
+        prompt = system_prompt_text
+        if conversation_history:
+            prompt += "\n\n## CONVERSATION SO FAR (maintain full context):\n"
+            for turn in conversation_history[-40:]:  # last 40 turns to stay within limits
+                role = "Worker" if turn["role"] == "user" else "DeliverAssist"
+                prompt += f"{role}: {turn['text']}\n"
+        return types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            system_instruction=types.Content(
+                parts=[types.Part(text=prompt)]
+            ),
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name="Kore"
+                    )
+                )
+            ),
+            tools=[types.Tool(function_declarations=[
+                types.FunctionDeclaration(**decl) for decl in TOOL_DECLARATIONS
+            ])],
+            input_audio_transcription=types.AudioTranscriptionConfig(),
+            output_audio_transcription=types.AudioTranscriptionConfig(),
+        )
 
     # Mutable reference so browser_to_gemini always uses the current session
     current_session = [None]
@@ -141,9 +158,9 @@ async def websocket_endpoint(ws: WebSocket):
     try:
         while not browser_disconnected.is_set():
             try:
-                async with client.aio.live.connect(model=MODEL, config=config) as session:
+                async with client.aio.live.connect(model=MODEL, config=get_config_with_history()) as session:
                     current_session[0] = session
-                    print("[Gemini] Session opened")
+                    print(f"[Gemini] Session opened (history: {len(conversation_history)} turns)")
 
                     try:
                         async for response in session.receive():
@@ -162,20 +179,43 @@ async def websocket_endpoint(ws: WebSocket):
                                     text = getattr(sc.input_transcription, 'text', None)
                                     if text and text.strip():
                                         await ws.send_json({"type": "transcript_input", "text": text})
+                                        current_user_chunks.append(text.strip())
 
                                 if hasattr(sc, 'output_transcription') and sc.output_transcription:
                                     text = getattr(sc.output_transcription, 'text', None)
                                     if text and text.strip():
                                         await ws.send_json({"type": "transcript_output", "text": text})
+                                        current_agent_chunks.append(text.strip())
 
                                 if hasattr(sc, 'model_turn') and sc.model_turn:
                                     for part in sc.model_turn.parts or []:
                                         if hasattr(part, 'text') and part.text:
                                             await ws.send_json({"type": "transcript_output", "text": part.text})
 
+                                if hasattr(sc, 'interrupted') and sc.interrupted:
+                                    # User spoke while agent was talking — stop playback on client
+                                    await ws.send_json({"type": "interrupted"})
+                                    current_agent_chunks.clear()  # discard the truncated response
+
                                 if hasattr(sc, 'turn_complete') and sc.turn_complete:
+                                    # Save completed turn into history before notifying browser
+                                    if current_user_chunks:
+                                        conversation_history.append({
+                                            "role": "user",
+                                            "text": " ".join(current_user_chunks)
+                                        })
+                                        current_user_chunks.clear()
+                                    if current_agent_chunks:
+                                        conversation_history.append({
+                                            "role": "model",
+                                            "text": " ".join(current_agent_chunks)
+                                        })
+                                        current_agent_chunks.clear()
+
                                     await ws.send_json({"type": "turn_complete"})
-                                    break  # exit receive loop → session context exits → new session starts
+                                    # Keep the session alive — do NOT break here.
+                                    # Breaking would restart the session and wipe Gemini's memory,
+                                    # causing "Are you sure?" and similar follow-ups to lose context.
 
                             if response.tool_call:
                                 for fc in response.tool_call.function_calls:
@@ -196,7 +236,7 @@ async def websocket_endpoint(ws: WebSocket):
                             traceback.print_exc()
 
                     current_session[0] = None
-                    print("[Gemini] Session ended, restarting...")
+                    print("[Gemini] Session ended, restarting with history...")
 
             except Exception as e:
                 current_session[0] = None
@@ -217,6 +257,52 @@ async def websocket_endpoint(ws: WebSocket):
             pass
 
     print("[WS] Session ended")
+
+
+# ── Video script endpoint ────────────────────────────────────────────────────
+
+class VideoScriptRequest(BaseModel):
+    query: str
+
+@app.post("/video-script")
+async def video_script(req: VideoScriptRequest):
+    """
+    Generate a structured explainer video script for a delivery driver's query.
+    Returns scenes, dialogue, visual directions, on-screen text, and interaction points.
+    """
+    result = generate_video_script(client, TEXT_MODEL, req.query)
+    return result
+
+
+# ── Generate video endpoint ──────────────────────────────────────────────────
+
+class GenerateVideoRequest(BaseModel):
+    script_payload: dict  # accepts the full /video-script response as-is
+
+
+@app.post("/generate-video")
+async def generate_video_endpoint(req: GenerateVideoRequest, debug: bool = False):
+    """
+    Transform a /video-script payload into a Nano Banana prompt and generate a video.
+
+    Query params:
+        debug=true  — return the generated prompt without calling the model
+    """
+    try:
+        prompt = transform_script_to_video_prompt(req.script_payload)
+        logger.info("[/generate-video] Prompt built (%d chars)", len(prompt))
+
+        if debug:
+            return {"status": "debug", "prompt": prompt}
+
+        result = nb_generate_video(client, prompt)
+        if result.get("video_url"):
+            logger.info("[/generate-video] video_url: %s", result["video_url"][:120])
+        return result
+
+    except Exception as exc:
+        logger.error("[/generate-video] Error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ── Static files & health check ──────────────────────────────────────────────

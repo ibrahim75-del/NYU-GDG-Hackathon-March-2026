@@ -179,6 +179,113 @@
             font-size: 18px;
         }
 
+        #btn-video {
+            background: #1a1a2e;
+            color: #818cf8;
+        }
+
+        #btn-video:disabled {
+            opacity: 0.35;
+            cursor: not-allowed;
+        }
+
+        #btn-video.loading {
+            animation: pulse 1.5s infinite;
+            background: #3730a3;
+            color: #fff;
+        }
+
+        /* ── Video / script card ────────────────── */
+        .msg.video-card {
+            align-self: flex-start;
+            background: #0f0f23;
+            border: 1px solid #3730a3;
+            color: #c7d2fe;
+            border-radius: 16px;
+            border-bottom-left-radius: 4px;
+            padding: 14px 16px;
+            max-width: 94%;
+            width: 94%;
+        }
+
+        .video-card-title {
+            font-weight: 700;
+            font-size: 13px;
+            color: #818cf8;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .video-card video {
+            width: 100%;
+            border-radius: 10px;
+            margin-top: 6px;
+            background: #000;
+        }
+
+        .video-scene {
+            margin-bottom: 10px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #1e1b4b;
+        }
+
+        .video-scene:last-of-type { border-bottom: none; margin-bottom: 0; }
+
+        .scene-name {
+            font-size: 11px;
+            font-weight: 700;
+            color: #6366f1;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+
+        .scene-dialogue {
+            font-size: 14px;
+            line-height: 1.5;
+            color: #e0e7ff;
+        }
+
+        .scene-tags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 6px;
+        }
+
+        .scene-tag {
+            background: #1e1b4b;
+            color: #a5b4fc;
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 99px;
+        }
+
+        .video-interaction {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #1e1b4b;
+        }
+
+        .interaction-question {
+            font-size: 13px;
+            color: #a5b4fc;
+            margin-bottom: 6px;
+        }
+
+        .interaction-option {
+            width: auto;
+            height: auto;
+            border-radius: 8px;
+            font-size: 12px;
+            padding: 6px 12px;
+            background: #1e1b4b;
+            color: #c7d2fe;
+            margin-right: 6px;
+            margin-bottom: 4px;
+        }
+
         /* ── Camera preview ─────────────────────── */
         #camera-container {
             display: none;
@@ -262,6 +369,7 @@
     <button id="btn-rights" title="Know Your Rights">📋</button>
     <button id="btn-mic" title="Hold to talk">🎙</button>
     <button id="btn-camera" title="Scan pay stub">📷</button>
+    <button id="btn-video" title="Generate explainer video" disabled>📹</button>
 </div>
 
 <script>
@@ -278,11 +386,16 @@ let cameraStream = null;
 let currentUserBubble = null;
 let currentAgentBubble = null;
 
+// Last agent response — used as query for video generation
+let lastAgentText = '';
+let pendingAgentChunks = [];
+
 const chat = document.getElementById('chat');
 const status = document.getElementById('status');
 const btnMic = document.getElementById('btn-mic');
 const btnCamera = document.getElementById('btn-camera');
 const btnRights = document.getElementById('btn-rights');
+const btnVideo = document.getElementById('btn-video');
 const btnSnap = document.getElementById('btn-snap');
 const cameraContainer = document.getElementById('camera-container');
 const cameraPreview = document.getElementById('camera-preview');
@@ -292,6 +405,7 @@ const rightsPanel = document.getElementById('rights-panel');
 const OUTPUT_SAMPLE_RATE = 24000;
 let audioQueue = [];
 let isPlaying = false;
+let currentSource = null;  // track playing node so we can stop it on interruption
 
 function initAudioContext() {
     if (!audioCtx) {
@@ -299,6 +413,15 @@ function initAudioContext() {
     }
     if (audioCtx.state === 'suspended') {
         audioCtx.resume();
+    }
+}
+
+function stopAudio() {
+    audioQueue = [];
+    isPlaying = false;
+    if (currentSource) {
+        try { currentSource.stop(); } catch(e) {}
+        currentSource = null;
     }
 }
 
@@ -316,6 +439,7 @@ function queueAudio(pcmB64) {
 function playNext() {
     if (audioQueue.length === 0) {
         isPlaying = false;
+        currentSource = null;
         return;
     }
     isPlaying = true;
@@ -326,6 +450,7 @@ function playNext() {
     source.buffer = buffer;
     source.connect(audioCtx.destination);
     source.onended = playNext;
+    currentSource = source;
     source.start();
 }
 
@@ -363,6 +488,7 @@ function connect() {
 
             case 'transcript_output':
                 if (msg.text && msg.text.trim()) {
+                    pendingAgentChunks.push(msg.text.trim());
                     if (!currentAgentBubble) {
                         currentAgentBubble = addMsg('agent', msg.text);
                     } else {
@@ -381,7 +507,20 @@ function connect() {
                 }
                 break;
 
+            case 'interrupted':
+                // Agent was mid-speech when user spoke — kill audio immediately
+                stopAudio();
+                currentAgentBubble = null;
+                pendingAgentChunks = [];
+                if (micActive) setStatus('listening', '🎙 Listening...');
+                break;
+
             case 'turn_complete':
+                if (pendingAgentChunks.length > 0) {
+                    lastAgentText = pendingAgentChunks.join(' ');
+                    pendingAgentChunks = [];
+                    btnVideo.disabled = false;
+                }
                 currentUserBubble = null;
                 currentAgentBubble = null;
                 setStatus('connected', '● Ready');
@@ -515,6 +654,207 @@ function captureFrame() {
     }, 'image/jpeg', 0.85);
 }
 
+// ── Video generation ─────────────────────────────────────────────────────────
+
+async function generateVideo() {
+    if (!lastAgentText || btnVideo.disabled) return;
+
+    btnVideo.disabled = true;
+    btnVideo.classList.add('loading');
+    const loadingCard = addMsg('system', '📹 Generating explainer video...');
+
+    try {
+        // Step 1: structured script
+        const scriptRes = await fetch('/video-script', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query: lastAgentText })
+        });
+        if (!scriptRes.ok) throw new Error(`Script failed: ${scriptRes.status}`);
+        const scriptPayload = await scriptRes.json();
+
+        // Step 2: video generation (falls back to script card on any failure)
+        let videoResult = {};
+        try {
+            const videoRes = await fetch('/generate-video', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ script_payload: scriptPayload })
+            });
+            if (videoRes.ok) {
+                videoResult = await videoRes.json();
+            }
+        } catch (_) {
+            // swallow — fall through to script card
+        }
+
+        loadingCard.remove();
+
+        const hasMedia = videoResult.video_url || videoResult.image_url || videoResult.audio_url;
+        if (hasMedia) {
+            showMediaCard(videoResult, scriptPayload);
+        } else {
+            showScriptCard(scriptPayload);
+        }
+
+    } catch (err) {
+        loadingCard.className = 'msg system';
+        loadingCard.textContent = `⚠️ ${err.message}`;
+    } finally {
+        btnVideo.classList.remove('loading');
+        btnVideo.disabled = false;
+    }
+}
+
+function showMediaCard(result, scriptPayload) {
+    const card = document.createElement('div');
+    card.className = 'msg video-card';
+
+    const title = document.createElement('div');
+    title.className = 'video-card-title';
+    title.textContent = '📹 Explainer';
+    card.appendChild(title);
+
+    // ── Veo video ───────────────────────────────────────────────────────────
+    if (result.video_url) {
+        const video = document.createElement('video');
+        video.controls = true;
+        video.autoplay = true;
+        video.style.cssText = 'width:100%;border-radius:10px;margin:6px 0;display:block;';
+        video.onerror = () => {
+            video.remove();
+            // If browser can't play inline, offer download
+            const dlBtn = document.createElement('button');
+            dlBtn.className = 'interaction-option';
+            dlBtn.textContent = '⬇ Download video';
+            dlBtn.onclick = () => {
+                const a = document.createElement('a');
+                a.href = result.video_url;
+                a.download = 'explainer.mp4';
+                a.target = '_blank';
+                a.click();
+            };
+            card.insertBefore(dlBtn, card.querySelector('.video-scene'));
+            chat.scrollTop = chat.scrollHeight;
+        };
+        video.src = result.video_url;
+        video.load();
+        card.appendChild(video);
+    }
+
+    // ── Fallback image ──────────────────────────────────────────────────────
+    if (!result.video_url && result.image_url) {
+        const img = document.createElement('img');
+        img.src = result.image_url;
+        img.alt = 'Explainer visual';
+        img.style.cssText = 'width:100%;border-radius:10px;margin:6px 0 8px;display:block;';
+        card.appendChild(img);
+
+        const dlImg = document.createElement('button');
+        dlImg.className = 'interaction-option';
+        dlImg.textContent = '⬇ Save image';
+        dlImg.onclick = () => {
+            const a = document.createElement('a');
+            a.href = result.image_url;
+            a.download = 'explainer.jpg';
+            a.click();
+        };
+        card.appendChild(dlImg);
+    }
+
+    // ── Background audio ────────────────────────────────────────────────────
+    if (result.audio_url) {
+        const audioLabel = document.createElement('div');
+        audioLabel.style.cssText = 'font-size:12px;color:#6366f1;margin:10px 0 4px;font-weight:600;';
+        audioLabel.textContent = '🎵 Background music';
+        card.appendChild(audioLabel);
+
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.autoplay = true;
+        audio.loop = true;
+        audio.src = result.audio_url;
+        audio.style.cssText = 'width:100%;margin-bottom:6px;';
+        card.appendChild(audio);
+    }
+
+    // ── Script scenes ───────────────────────────────────────────────────────
+    const divider = document.createElement('div');
+    divider.style.cssText = 'border-top:1px solid #1e1b4b;margin:10px 0;';
+    card.appendChild(divider);
+    renderSceneList(card, scriptPayload);
+
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+}
+
+function renderSceneList(container, scriptPayload) {
+    for (const scene of (scriptPayload.scenes || [])) {
+        const sceneDiv = document.createElement('div');
+        sceneDiv.className = 'video-scene';
+
+        const nameEl = document.createElement('div');
+        nameEl.className = 'scene-name';
+        nameEl.textContent = `${scene.name} · ${scene.duration_seconds}s`;
+        sceneDiv.appendChild(nameEl);
+
+        const dialogue = document.createElement('div');
+        dialogue.className = 'scene-dialogue';
+        dialogue.textContent = scene.dialogue;
+        sceneDiv.appendChild(dialogue);
+
+        if (scene.onscreen_text && scene.onscreen_text.length > 0) {
+            const tags = document.createElement('div');
+            tags.className = 'scene-tags';
+            for (const tag of scene.onscreen_text) {
+                const span = document.createElement('span');
+                span.className = 'scene-tag';
+                span.textContent = tag;
+                tags.appendChild(span);
+            }
+            sceneDiv.appendChild(tags);
+        }
+
+        container.appendChild(sceneDiv);
+    }
+
+    for (const ip of (scriptPayload.interaction_points || [])) {
+        const ipDiv = document.createElement('div');
+        ipDiv.className = 'video-interaction';
+
+        if (ip.prompt) {
+            const q = document.createElement('div');
+            q.className = 'interaction-question';
+            q.textContent = ip.prompt;
+            ipDiv.appendChild(q);
+        }
+
+        for (const opt of (ip.options || [])) {
+            const btn = document.createElement('button');
+            btn.className = 'interaction-option';
+            btn.textContent = opt;
+            ipDiv.appendChild(btn);
+        }
+
+        container.appendChild(ipDiv);
+    }
+}
+
+function showScriptCard(scriptPayload) {
+    const card = document.createElement('div');
+    card.className = 'msg video-card';
+
+    const title = document.createElement('div');
+    title.className = 'video-card-title';
+    title.textContent = '📹 Video Script';
+    card.appendChild(title);
+
+    renderSceneList(card, scriptPayload);
+
+    chat.appendChild(card);
+    chat.scrollTop = chat.scrollHeight;
+}
+
 // ── UI helpers ──────────────────────────────────────────────────────────────
 function addMsg(type, text) {
     const div = document.createElement('div');
@@ -548,6 +888,7 @@ btnMic.addEventListener('click', () => {
 
 btnCamera.addEventListener('click', toggleCamera);
 btnSnap.addEventListener('click', captureFrame);
+btnVideo.addEventListener('click', generateVideo);
 
 btnRights.addEventListener('click', () => {
     rightsPanel.style.display = rightsPanel.style.display === 'none' ? 'block' : 'none';

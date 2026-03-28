@@ -1,0 +1,15 @@
+{
+    "keep": {
+        "days": true,
+        "amount": 14
+    },
+    "auditLog": "/Users/hamidouwb/Downloads/NYU-GDG-Hackathon-March-2026/logs/.1fe5d8dabd95e719f5eda2a14d59e74083fd8949-audit.json",
+    "files": [
+        {
+            "date": 1774710870870,
+            "name": "/Users/hamidouwb/Downloads/NYU-GDG-Hackathon-March-2026/logs/application-2026-03-28.log",
+            "hash": "024ba8b355dd6a9eeabf97f523e5cf9850241f300980261072e7c830c2648e28"
+        }
+    ],
+    "hashType": "sha256"
+}
